@@ -1,0 +1,1 @@
+pyinstaller --onefile --name novel_downloader main.py -w
