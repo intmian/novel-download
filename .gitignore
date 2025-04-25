@@ -3,6 +3,9 @@ output
 chapter
 build
 dist
+main.build
+main.dist
+*.exe
 *.spec
 *.json
 books

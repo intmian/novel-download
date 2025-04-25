@@ -8,12 +8,12 @@ from tqdm import tqdm
 import requests
 import shutil
 import sys
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QListWidget, QTextEdit, QMessageBox, QFileDialog, QProgressBar, QInputDialog
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl
-from PyQt5.QtGui import QDesktopServices, QMovie
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtGui import QDesktopServices, QMovie
 
 baseUrl = "https://m.lwxsw8.com"
 NOVEL_LIST_FILE = os.path.join(os.getcwd(), "novel_list.json")
@@ -551,7 +551,7 @@ class NovelDownloaderUI(QWidget):
             self.progress_bar.setValue(0)
             self.progress_time_label.setText("")
         self.info_text.append(msg)
-        self.info_text.moveCursor(self.info_text.textCursor().End)
+        self.info_text.moveCursor(self.info_text.textCursor().MoveOperation.End)
 
     def on_download_finished(self, output_file, books_output_file, success, fail, unDownload, progress_msgs):
         self.download_btn.setEnabled(True)
@@ -609,7 +609,8 @@ def main():
     app = QApplication(sys.argv)
     win = NovelDownloaderUI()
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
