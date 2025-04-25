@@ -501,7 +501,7 @@ class NovelDownloaderUI(QWidget):
         author = self.current_selected_novel.get("author", "")
         # 新增：如果是新小说，弹出输入框确认名称
         if name not in self.novel_list:
-            new_name, ok = QInputDialog.getText(self, "确认小说名称", "请输入小说名称：", QLineEdit.Normal, name)
+            new_name, ok = QInputDialog.getText(self, "确认小说名称", "请输入小说名称：", QLineEdit.EchoMode.Normal, name)
             if not ok or not new_name.strip():
                 QMessageBox.warning(self, "提示", "小说名称不能为空，已取消下载")
                 return
