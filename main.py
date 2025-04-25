@@ -579,8 +579,8 @@ class NovelDownloaderUI(QWidget):
         keys = list(self.novel_list.keys())
         if 0 <= idx < len(keys):
             name = keys[idx]
-            reply = QMessageBox.question(self, "确认删除", f"确定要删除小说《{name}》及其所有数据吗？", QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
+            reply = QMessageBox.question(self, "确认删除", f"确定要删除小说《{name}》及其所有数据吗？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
                 # 删除数据文件夹
                 base_folder = os.path.join(BOOK_DATA_DIR, name)
                 if os.path.exists(base_folder):
