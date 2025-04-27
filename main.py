@@ -10,15 +10,18 @@ import shutil
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QLineEdit, QListWidget, QTextEdit, QMessageBox, QFileDialog, QProgressBar, QInputDialog
+    QLineEdit, QListWidget, QTextEdit, QMessageBox, QFileDialog, QProgressBar, QInputDialog, QComboBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices, QMovie
+import importlib.util
 
 baseUrl = "https://m.lwxsw8.com"
 NOVEL_LIST_FILE = os.path.join(os.getcwd(), "novel_list.json")
 BOOK_DATA_DIR = os.path.join(os.getcwd(), "book_data")
 BOOKS_DIR = os.path.join(os.getcwd(), "books")
+MODS_DIR = os.path.join(os.getcwd(), "mods")
+MODS_PUBLIC_FILE = os.path.join(MODS_DIR, "public.py")
 
 @dataclass
 class Chapter:
@@ -30,6 +33,7 @@ class Chapter:
 def ensure_dirs():
     os.makedirs(BOOK_DATA_DIR, exist_ok=True)
     os.makedirs(BOOKS_DIR, exist_ok=True)
+    os.makedirs(MODS_DIR, exist_ok=True)
 
 def extract_chapters(html_content: str) -> List[Chapter]:
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -152,18 +156,19 @@ class DownloadThread(QThread):
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(str, str, int, int, int, list)
     
-    def __init__(self, title, url, author):
+    def __init__(self, title, url, author, mod):
         super().__init__()
         self.title = title
         self.url = url
         self.author = author
+        self.mod = mod
         self._stopped = False
 
     def stop(self):
         self._stopped = True
 
     def run(self):
-        title, novel_url, author = self.title, self.url, self.author
+        title, novel_url, author, mod = self.title, self.url, self.author, self.mod
         base_folder = os.path.join(BOOK_DATA_DIR, title)
         output_folder = os.path.join(base_folder, "output")
         chapter_folder = os.path.join(base_folder, "chapter")
@@ -175,8 +180,8 @@ class DownloadThread(QThread):
                 state = json.load(f)
         else:
             state = {"downloaded": []}
-        html_content = get_html(novel_url)
-        chapters = extract_chapters(html_content)
+        html_content = mod.get_html(novel_url)
+        chapters = mod.get_chapters(novel_url)
         downloaded_set = set(state["downloaded"])
         for chapter in chapters:
             safe_name = chapter.link.lstrip('/').replace('/', '_') + ".txt"
@@ -202,8 +207,7 @@ class DownloadThread(QThread):
                 progress_msgs.append("用户已手动停止下载。")
                 break
             try:
-                chapter_html = get_html(baseUrl + chapter.link)
-                chapter.text = extract_chapter_text(chapter_html)
+                chapter.text = mod.download_chapter(chapter.link)
                 if chapter.text.strip():
                     safe_name = chapter.link.lstrip('/').replace('/', '_') + ".txt"
                     chapter_path = os.path.join(chapter_folder, safe_name)
@@ -233,7 +237,9 @@ class DownloadThread(QThread):
         state["downloaded"] = list(downloaded_set)
         save_state(state_file, state)
         output_file = os.path.join(output_folder, f"{title}.txt")
-        merge_chapters(chapters, output_file)
+        novel_text = mod.assemble_novel(chapters)
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(novel_text)
         author_str = f"({author})" if author else ""
         books_output_file = os.path.join(BOOKS_DIR, f"{title}{author_str}.txt")
         shutil.copyfile(output_file, books_output_file)
@@ -243,13 +249,14 @@ class SearchThread(QThread):
     result = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, keyword):
+    def __init__(self, keyword, mod):
         super().__init__()
         self.keyword = keyword
+        self.mod = mod
 
     def run(self):
         try:
-            results = search_novel(self.keyword)
+            results = self.mod.search_novels(self.keyword)
             self.result.emit(results)
         except Exception as e:
             self.error.emit(str(e))
@@ -258,18 +265,19 @@ class LoadChaptersThread(QThread):
     result = pyqtSignal(int, int, str)
     error = pyqtSignal(str)
 
-    def __init__(self, name, url):
+    def __init__(self, name, url, mod):
         super().__init__()
         self.name = name
         self.url = url
+        self.mod = mod
 
     def run(self):
         try:
             base_folder = os.path.join(BOOK_DATA_DIR, self.name)
             chapter_folder = os.path.join(base_folder, "chapter")
             state_file = os.path.join(base_folder, "state.json")
-            html_content = get_html(self.url)
-            chapters = extract_chapters(html_content)
+            html_content = self.mod.get_html(self.url)
+            chapters = self.mod.get_chapters(self.url)
             total_chapters = len(chapters)
             downloaded_set = set()
             if os.path.exists(state_file):
@@ -302,6 +310,8 @@ class NovelDownloaderUI(QWidget):
         self.is_downloading = False
         self.download_start_time = None
         self.last_progress_value = 0
+        self.mods = self.load_mods()
+        self.current_mod = None
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -330,11 +340,19 @@ class NovelDownloaderUI(QWidget):
         self.delete_btn.clicked.connect(self.on_delete_novel)
         self.open_books_btn = QPushButton("打开导出目录")
         self.open_books_btn.clicked.connect(self.on_open_books_dir)
+        self.open_mods_btn = QPushButton("打开mods目录")
+        self.open_mods_btn.clicked.connect(self.on_open_mods_dir)
+        self.mod_selector = QComboBox()
+        self.mod_selector.addItems(self.mods.keys())
+        self.mod_selector.currentIndexChanged.connect(self.on_mod_selected)
         btn_layout.addWidget(self.download_btn)
         btn_layout.addWidget(self.export_btn)
         btn_layout.addWidget(self.refresh_btn)
         btn_layout.addWidget(self.delete_btn)
         btn_layout.addWidget(self.open_books_btn)
+        btn_layout.addWidget(self.open_mods_btn)
+        btn_layout.addWidget(QLabel("选择mod:"))
+        btn_layout.addWidget(self.mod_selector)
         layout.addLayout(btn_layout)
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
@@ -362,6 +380,21 @@ class NovelDownloaderUI(QWidget):
             "网站高峰期存在访问限制，如果连续下载失败，请稍后再试或者切换网络（VPN）。\n"
             "搜索可能会出现很多奇怪的结果，是引流内容，请忽略。仅供用户进行爬虫学习使用，禁止进行盗版用途使用。"
         )
+
+    def load_mods(self):
+        mods = {}
+        for mod_name in os.listdir(MODS_DIR):
+            mod_path = os.path.join(MODS_DIR, mod_name, "script.py")
+            if os.path.exists(mod_path):
+                spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                mods[mod_name] = mod.Lwxsw8Mod()
+        return mods
+
+    def on_mod_selected(self, index):
+        mod_name = self.mod_selector.currentText()
+        self.current_mod = self.mods.get(mod_name)
 
     def show_loading(self, show=True):
         if show:
@@ -401,6 +434,9 @@ class NovelDownloaderUI(QWidget):
         if not keyword:
             QMessageBox.warning(self, "提示", "请输入关键词")
             return
+        if not self.current_mod:
+            QMessageBox.warning(self, "提示", "请选择一个mod")
+            return
         self.list_widget.clear()
         self.info_text.setText("正在搜索...")
         self.search_btn.setEnabled(False)
@@ -408,7 +444,7 @@ class NovelDownloaderUI(QWidget):
         self.show_loading(True)
         QApplication.processEvents()
         # 启动搜索线程
-        self.search_thread = SearchThread(keyword)
+        self.search_thread = SearchThread(keyword, self.current_mod)
         self.search_thread.result.connect(self.on_search_result)
         self.search_thread.error.connect(self.on_search_error)
         self.search_thread.start()
@@ -424,7 +460,7 @@ class NovelDownloaderUI(QWidget):
             desc = item.get("desc", "")
             desc = desc.replace('\n', '').replace('\r', '')
             desc = desc[:30] + "..." if len(desc) > 30 else desc
-            self.list_widget.addItem(f"{item['name']}（{author}） - {desc}")
+            self.list_widget.addItem(f"{item['title']}（{author}） - {desc}")
         if not results:
             self.info_text.setText("未找到相关小说。")
         else:
@@ -445,7 +481,7 @@ class NovelDownloaderUI(QWidget):
             if 0 <= idx < len(self.current_search_results):
                 item = self.current_search_results[idx]
                 self.current_selected_novel = item
-                info = f"书名: {item['name']}\n作者: {item.get('author','')}\n简介: {item.get('desc','')}\n链接: {item['url']}"
+                info = f"书名: {item['title']}\n作者: {item.get('author','')}\n简介: {item.get('desc','')}\n链接: {item['link']}"
                 self.info_text.setText(info)
                 self.current_chapter_count = None
                 self.current_downloaded_count = None
@@ -462,7 +498,7 @@ class NovelDownloaderUI(QWidget):
                 self.show_loading(True)
                 QApplication.processEvents()
                 # 启动章节加载线程
-                self.load_chapters_thread = LoadChaptersThread(name, url)
+                self.load_chapters_thread = LoadChaptersThread(name, url, self.current_mod)
                 self.load_chapters_thread.result.connect(self.on_load_chapters_result)
                 self.load_chapters_thread.error.connect(self.on_load_chapters_error)
                 self.load_chapters_thread.start()
@@ -496,6 +532,9 @@ class NovelDownloaderUI(QWidget):
         if self.current_selected_novel is None:
             QMessageBox.warning(self, "提示", "请先选择小说")
             return
+        if not self.current_mod:
+            QMessageBox.warning(self, "提示", "请选择一个mod")
+            return
         name = self.current_selected_novel["name"]
         url = self.current_selected_novel["url"]
         author = self.current_selected_novel.get("author", "")
@@ -519,7 +558,7 @@ class NovelDownloaderUI(QWidget):
         self.show_loading(True)
         self.download_start_time = None
         self.last_progress_value = 0
-        self.download_thread = DownloadThread(name, url, author)
+        self.download_thread = DownloadThread(name, url, author, self.current_mod)
         self.download_thread.progress.connect(self.on_download_progress)
         self.download_thread.finished.connect(self.on_download_finished)
         self.download_thread.start()
@@ -601,6 +640,12 @@ class NovelDownloaderUI(QWidget):
 
     def on_open_books_dir(self):
         path = os.path.abspath(BOOKS_DIR)
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def on_open_mods_dir(self):
+        path = os.path.abspath(MODS_DIR)
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
