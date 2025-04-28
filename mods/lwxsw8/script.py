@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List
 from mods.public import Novel, Chapter, ModInterface
+import re
 
 class Lwxsw8Mod(ModInterface):
     base_url = "https://m.lwxsw8.com"

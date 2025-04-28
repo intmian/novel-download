@@ -22,6 +22,7 @@ BOOK_DATA_DIR = os.path.join(os.getcwd(), "book_data")
 BOOKS_DIR = os.path.join(os.getcwd(), "books")
 MODS_DIR = os.path.join(os.getcwd(), "mods")
 MODS_PUBLIC_FILE = os.path.join(MODS_DIR, "public.py")
+CONFIG_FILE = os.path.join(os.getcwd(), "config.json")
 
 @dataclass
 class Chapter:
@@ -92,8 +93,17 @@ def merge_chapters(chapters, output_file):
 def load_novel_list():
     if os.path.exists(NOVEL_LIST_FILE):
         with open(NOVEL_LIST_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+            data = json.load(f)
+            # 兼容老数据
+            if isinstance(data, dict) and "novels" not in data:
+                # 老格式，升级
+                novels = {}
+                for k, v in data.items():
+                    novels[k] = v
+                    novels[k]["mod"] = None
+                return {"novels": novels, "last_mod": None}
+            return data
+    return {"novels": {}, "last_mod": None}
 
 def save_novel_list(novel_list):
     with open(NOVEL_LIST_FILE, "w", encoding="utf-8") as f:
@@ -299,9 +309,9 @@ class NovelDownloaderUI(QWidget):
         super().__init__()
         self.setWindowTitle("小说下载器")
         self.resize(800, 600)
-        self.novel_list = load_novel_list()
-        self.init_ui()
-        ensure_dirs()
+        self.novel_list_data = load_novel_list()
+        self.novel_list = self.novel_list_data.get("novels", {})
+        
         self.current_search_results = []
         self.current_selected_novel = None
         self.current_chapter_count = None
@@ -312,6 +322,38 @@ class NovelDownloaderUI(QWidget):
         self.last_progress_value = 0
         self.mods = self.load_mods()
         self.current_mod = None
+        ensure_dirs()
+        self.last_selected_mod = self.load_last_selected_mod()
+        
+        self.init_ui()
+
+    def load_last_selected_mod(self):
+        # 优先从 novel_list.json 读取 last_mod
+        if self.novel_list_data.get("last_mod"):
+            return self.novel_list_data["last_mod"]
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    return config.get("last_mod", None)
+            except Exception:
+                return None
+        return None
+
+    def save_last_selected_mod(self, mod_name):
+        self.novel_list_data["last_mod"] = mod_name
+        save_novel_list(self.novel_list_data)
+        # 兼容 config.json
+        config = {}
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            except Exception:
+                config = {}
+        config["last_mod"] = mod_name
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -344,7 +386,11 @@ class NovelDownloaderUI(QWidget):
         self.open_mods_btn.clicked.connect(self.on_open_mods_dir)
         self.mod_selector = QComboBox()
         self.mod_selector.addItems(self.mods.keys())
+        if self.last_selected_mod and self.last_selected_mod in self.mods:
+            idx = list(self.mods.keys()).index(self.last_selected_mod)
+            self.mod_selector.setCurrentIndex(idx)
         self.mod_selector.currentIndexChanged.connect(self.on_mod_selected)
+        self.on_mod_selected(self.mod_selector.currentIndex(),first=True)
         btn_layout.addWidget(self.download_btn)
         btn_layout.addWidget(self.export_btn)
         btn_layout.addWidget(self.refresh_btn)
@@ -392,9 +438,14 @@ class NovelDownloaderUI(QWidget):
                 mods[mod_name] = mod.Lwxsw8Mod()
         return mods
 
-    def on_mod_selected(self, index):
+    def on_mod_selected(self, index, first = False):
         mod_name = self.mod_selector.currentText()
         self.current_mod = self.mods.get(mod_name)
+        self.save_last_selected_mod(mod_name)
+        # 切换mod时弹窗提示
+        if not first:
+            QMessageBox.information(self, "切换mod", "切换mod后只显示该mod保存的小说，下载同名小说会覆盖原有数据。")
+        self.refresh_saved_list()
 
     def show_loading(self, show=True):
         if show:
@@ -416,10 +467,14 @@ class NovelDownloaderUI(QWidget):
 
     def refresh_saved_list(self):
         self.list_widget.clear()
-        self.novel_list = load_novel_list()
+        self.novel_list_data = load_novel_list()
+        self.novel_list = self.novel_list_data.get("novels", {})
+        # 只显示当前mod的小说
+        mod_name = self.mod_selector.currentText()
         for k, v in self.novel_list.items():
-            author = v.get("author", "")
-            self.list_widget.addItem(f"{k}（{author}）")
+            if v.get("mod") == mod_name:
+                author = v.get("author", "")
+                self.list_widget.addItem(f"{k}（{author}）")
         self.current_search_results = []
         self.info_text.clear()
         self.current_selected_novel = None
@@ -456,11 +511,11 @@ class NovelDownloaderUI(QWidget):
         self.current_search_results = results
         self.list_widget.clear()
         for item in results:
-            author = item.get("author", "")
-            desc = item.get("desc", "")
+            author = item.author
+            desc = item.description
             desc = desc.replace('\n', '').replace('\r', '')
             desc = desc[:30] + "..." if len(desc) > 30 else desc
-            self.list_widget.addItem(f"{item['title']}（{author}） - {desc}")
+            self.list_widget.addItem(f"{item.title}（{author}） - {desc}")
         if not results:
             self.info_text.setText("未找到相关小说。")
         else:
@@ -481,12 +536,14 @@ class NovelDownloaderUI(QWidget):
             if 0 <= idx < len(self.current_search_results):
                 item = self.current_search_results[idx]
                 self.current_selected_novel = item
-                info = f"书名: {item['title']}\n作者: {item.get('author','')}\n简介: {item.get('desc','')}\n链接: {item['link']}"
+                info = f"书名: {item.title}\n作者: {item.author}\n简介: {item.description}\n链接: {item.link}"
                 self.info_text.setText(info)
                 self.current_chapter_count = None
                 self.current_downloaded_count = None
         else:
-            keys = list(self.novel_list.keys())
+            # 只查找当前mod下的小说
+            mod_name = self.mod_selector.currentText()
+            keys = [k for k, v in self.novel_list.items() if v.get("mod") == mod_name]
             if 0 <= idx < len(keys):
                 name = keys[idx]
                 author = self.novel_list[name].get("author", "")
@@ -535,20 +592,43 @@ class NovelDownloaderUI(QWidget):
         if not self.current_mod:
             QMessageBox.warning(self, "提示", "请选择一个mod")
             return
+        mod_name = self.mod_selector.currentText()
         name = self.current_selected_novel["name"]
         url = self.current_selected_novel["url"]
         author = self.current_selected_novel.get("author", "")
+        # 只查找当前mod下的小说
+        exist = name in self.novel_list and self.novel_list[name].get("mod") == mod_name
+        # 检查是否有同名但不同mod的小说
+        if name in self.novel_list and not exist:
+            # 如果url不同，弹窗提醒并清理原有数据
+            old_url = self.novel_list[name].get("url")
+            if old_url != url:
+                reply = QMessageBox.question(self, "警告", f"同名小说已存在于其他mod下，下载将覆盖并删除原有数据，是否继续？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                # 删除原有数据
+                base_folder = os.path.join(BOOK_DATA_DIR, name)
+                if os.path.exists(base_folder):
+                    shutil.rmtree(base_folder, ignore_errors=True)
+                author_str = f"({self.novel_list[name].get('author','')})" if self.novel_list[name].get('author','') else ""
+                books_output_file = os.path.join(BOOKS_DIR, f"{name}{author_str}.txt")
+                if os.path.exists(books_output_file):
+                    os.remove(books_output_file)
+                # 删除映射
+                del self.novel_list[name]
+                self.novel_list_data["novels"] = self.novel_list
+                save_novel_list(self.novel_list_data)
         # 新增：如果是新小说，弹出输入框确认名称
-        if name not in self.novel_list:
+        if not exist:
             new_name, ok = QInputDialog.getText(self, "确认小说名称", "请输入小说名称：", QLineEdit.EchoMode.Normal, name)
             if not ok or not new_name.strip():
                 QMessageBox.warning(self, "提示", "小说名称不能为空，已取消下载")
                 return
             name = new_name.strip()
-            # 更新当前选中小说的name
             self.current_selected_novel["name"] = name
-            self.novel_list[name] = {"url": url, "author": author}
-            save_novel_list(self.novel_list)
+            self.novel_list[name] = {"url": url, "author": author, "mod": mod_name}
+            self.novel_list_data["novels"] = self.novel_list
+            save_novel_list(self.novel_list_data)
         self.progress_bar.setValue(0)
         self.progress_time_label.setText("")
         self.download_btn.setText("停止")
@@ -615,24 +695,24 @@ class NovelDownloaderUI(QWidget):
         if self.current_search_results:
             QMessageBox.warning(self, "提示", "只能删除已保存的小说")
             return
-        keys = list(self.novel_list.keys())
+        # 只查找当前mod下的小说
+        mod_name = self.mod_selector.currentText()
+        keys = [k for k, v in self.novel_list.items() if v.get("mod") == mod_name]
         if 0 <= idx < len(keys):
             name = keys[idx]
             reply = QMessageBox.question(self, "确认删除", f"确定要删除小说《{name}》及其所有数据吗？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
-                # 删除数据文件夹
                 base_folder = os.path.join(BOOK_DATA_DIR, name)
                 if os.path.exists(base_folder):
                     shutil.rmtree(base_folder, ignore_errors=True)
-                # 删除导出文件
                 author = self.novel_list[name].get("author", "")
                 author_str = f"({author})" if author else ""
                 books_output_file = os.path.join(BOOKS_DIR, f"{name}{author_str}.txt")
                 if os.path.exists(books_output_file):
                     os.remove(books_output_file)
-                # 删除映射
                 del self.novel_list[name]
-                save_novel_list(self.novel_list)
+                self.novel_list_data["novels"] = self.novel_list
+                save_novel_list(self.novel_list_data)
                 self.refresh_saved_list()
                 QMessageBox.information(self, "删除成功", f"小说《{name}》已删除。")
         else:

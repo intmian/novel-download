@@ -11,3 +11,4 @@ main.dist
 books
 book_data
 *.rar
+__pycache__
